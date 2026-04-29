@@ -3,6 +3,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+from app.routes import api
+
 app = FastAPI(
     title="API Lifecycle Service",
     description="Backend API Governance & Lifecycle Platform",
@@ -17,6 +19,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register routers
+app.include_router(api.router)
 
 @app.get("/")
 async def root():

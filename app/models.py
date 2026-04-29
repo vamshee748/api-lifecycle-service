@@ -59,81 +59,13 @@ class API(Base, BaseModel):
     service_name = Column(String(255), nullable=False, index=True, comment="Internal service identifier")
     version = Column(String(50), nullable=False, comment="Current version of the API")
     status = Column(SQLEnum(APIStatus), default=APIStatus.DRAFT, nullable=False, index=True, comment="Current lifecycle status")
-  ============================================================
-# API Version Model - Tracks different versions of an API
-# ============================================================
-
-class APIVersion(Base, BaseModel):
-    """
-    API Version Model - Represents a specific version of an API
+    description = Column(Text, nullable=True, comment="Detailed description of the API")
+    base_url = Column(String(500), nullable=True, comment="Base URL for the API")
+    spec_url = Column(String(500), nullable=True, comment="URL to the OpenAPI specification")
+    owner_team = Column(String(255), nullable=True, index=True, comment="Team responsible for the API")
     
-    Stores version-specific information including OpenAPI specifications
-    and active status for version management.
-    """
-    __tablename__ = "api_versions"
-    
-  ============================================================
-# API Change Model - Tracks changes between API versions
-# ============================================================
-
-class APIChange(Base, BaseModel):
-    """
-    API Change Model - Records changes between API versions
-    
-    Captures version transitions, change types, and detailed
-    information about what changed for governance and tracking.
-    """
-    __tablename__ = "api_changes"
-    
-    # Foreign key
-    api_id = Column(Integer, ForeignKey("apis.id", ondelete="CASCADE"), nullable=False, index=True, comment="Reference to API")
-  ============================================================
-# Governance Policy Model - Defines API governance rules
-# ============================================================
-
-class GovernancePolicy(Base, BaseModel):
-    """
-    Governance Policy Model - Defines rules and policies for API governance
-    
-    Manages policies that enforce standards, approval workflows,
-    naming conventions, and other governance requirements.
-    """
-    __tablename__ = "governance_policies"
-    
-    # Policy details
-    name = Column(String(255), nullable=False, unique=True, index=True, comment="Unique policy name")
-    description = Column(Text, nullable=True, comment="Detailed description of the policy's purpose")
-    rule_type = Column(String(100), nullable=False, index=True, comment="Type of rule (approval_required, naming_convention, etc.)")
-    rule_config = Column(Text, nullable=True, comment="Rule configuration in JSON format")
-    is_active = Column(Boolean, default=True, nullable=False, index=True, comment="Whether the policy is currently enforced")
-    severity = Column(String(50), nullable=False, default="warning", comment="Severity level: critical, warning, or info")
-    
-    # Indexes
-    __table_args__ = (
-        Index('idx_policy_active_severity', 'is_active', 'severity'),
-        Index('idx_policy_type_active', 'rule_type', 'is_active'),
-        {'comment': 'Governance policies for API management and compliance'}
-    )
-    
-    def __repr__(self):
-        return f"<GovernancePolicy(id={self.id}, name='{self.name}', type='{self.rule_type}', active={self.is_active})>"
-    
-    # Indexes
-    __table_args__ = (
-        Index('idx_change_type_created', 'change_type', 'created_at'),
-        Index('idx_change_api_versions', 'api_id', 'from_version', 'to_version'),
-        {'comment': 'API change tracking for version management and governance'}
-    )
-    
-    def __repr__(self):
-        return f"<APIChange(id={self.id}, api_id={self.api_id}, {self.from_version}->{self.to_version}, type='{self.change_type.value}')>"
-        UniqueConstraint('api_id', 'version', name='uq_api_version'),
-        Index('idx_version_active', 'api_id', 'is_active'),
-        {'comment': 'API version tracking and specification storage'}
-    )
-    
-    def __repr__(self):
-        return f"<APIVersion(id={self.id}, api_id={self.api_id}, version='{self.version}', active={self.is_active})>"="api", cascade="all, delete-orphan", lazy="dynamic")
+    # Relationships
+    versions = relationship("APIVersion", back_populates="api", cascade="all, delete-orphan", lazy="dynamic")
     changes = relationship("APIChange", back_populates="api", cascade="all, delete-orphan", lazy="dynamic")
     
     # Indexes for performance
