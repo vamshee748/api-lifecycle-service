@@ -144,7 +144,7 @@ def get_apis(
 
 def update_api(db: Session, api_id: int, api_data: APIUpdate) -> Optional[API]:
     """
-    Update an existing API record.
+    Update an existing API record with validation.
     
     Args:
         db: Database session
@@ -155,7 +155,11 @@ def update_api(db: Session, api_id: int, api_data: APIUpdate) -> Optional[API]:
         Updated API model instance if found, None otherwise
         
     Raises:
-        HTTPException: For database errors
+        HTTPException: 
+            - 404 if API not found
+            - 409 if update causes duplicate service_name + version
+            - 400 for validation errors
+            - 500 for unexpected database errors
     """
     try:
         db_api = get_api(db, api_id)
@@ -163,18 +167,61 @@ def update_api(db: Session, api_id: int, api_data: APIUpdate) -> Optional[API]:
         if not db_api:
             return None
         
-        # Update only provided fields
+        # Get only the fields that are being updated
         update_data = api_data.model_dump(exclude_unset=True)
         
+        if not update_data:
+            logger.warning(f"Update called for API {api_id} with no fields to update")
+            return db_api
+        
+        # Check for duplicate service_name + version if either is being updated
+        if 'service_name' in update_data or 'version' in update_data:
+            new_service_name = update_data.get('service_name', db_api.service_name)
+            new_version = update_data.get('version', db_api.version)
+            
+            # Only check if the combination is actually changing
+            if new_service_name != db_api.service_name or new_version != db_api.version:
+                existing_api = db.query(API).filter(
+                    API.service_name == new_service_name,
+                    API.version == new_version,
+                    API.id != api_id  # Exclude current API
+                ).first()
+                
+                if existing_api:
+                    logger.warning(
+                        f"Attempted to update API {api_id} to duplicate service_name/version: "
+                        f"{new_service_name} v{new_version} (conflicts with API {existing_api.id})"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"API with service_name '{new_service_name}' and version '{new_version}' already exists"
+                    )
+        
+        # Apply updates
         for field, value in update_data.items():
             setattr(db_api, field, value)
         
         db.commit()
         db.refresh(db_api)
         
-        logger.info(f"Successfully updated API ID: {api_id}")
+        logger.info(
+            f"Successfully updated API ID: {api_id} "
+            f"(Fields: {', '.join(update_data.keys())})"
+        )
         
         return db_api
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 409 conflict)
+        raise
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error updating API {api_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Database integrity constraint violated. Please check your input data."
+        )
         
     except SQLAlchemyError as e:
         db.rollback()
@@ -183,11 +230,24 @@ def update_api(db: Session, api_id: int, api_data: APIUpdate) -> Optional[API]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected database error occurred"
         )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error updating API {api_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
 
 
 def delete_api(db: Session, api_id: int) -> bool:
     """
-    Delete an API record.
+    Delete an API record with cascade deletion of related data.
+    
+    This will permanently delete the API and all associated:
+    - API versions
+    - API changes
+    - Any other related records (cascade delete)
     
     Args:
         db: Database session
@@ -197,18 +257,35 @@ def delete_api(db: Session, api_id: int) -> bool:
         True if deleted, False if not found
         
     Raises:
-        HTTPException: For database errors
+        HTTPException: 
+            - 500 for unexpected database errors
     """
     try:
         db_api = get_api(db, api_id)
         
         if not db_api:
+            logger.warning(f"Attempted to delete non-existent API ID: {api_id}")
             return False
         
+        # Log details before deletion for audit trail
+        api_name = db_api.name
+        api_service = db_api.service_name
+        api_version = db_api.version
+        api_status = db_api.status.value
+        
+        # Count related records that will be cascade deleted
+        versions_count = db_api.versions.count()
+        changes_count = db_api.changes.count()
+        
+        # Perform deletion (cascade will handle related records)
         db.delete(db_api)
         db.commit()
         
-        logger.info(f"Successfully deleted API ID: {api_id}")
+        logger.info(
+            f"Successfully deleted API ID: {api_id} "
+            f"(Name: '{api_name}', Service: '{api_service}', Version: '{api_version}', Status: '{api_status}') - "
+            f"Cascade deleted {versions_count} version(s) and {changes_count} change(s)"
+        )
         
         return True
         
@@ -217,5 +294,13 @@ def delete_api(db: Session, api_id: int) -> bool:
         logger.error(f"Database error deleting API {api_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected database error occurred"
+            detail="An unexpected database error occurred while deleting the API"
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error deleting API {api_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while deleting the API"
         )

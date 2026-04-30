@@ -6,7 +6,7 @@ from typing import List, Optional
 from app.db import get_db
 from app.schemas import APICreate, APIUpdate, APIResponse, APIListResponse, APIStatusEnum
 from app.services import create_api, get_api, get_apis, update_api, delete_api
-from app.models import APIStatus
+from app.models import API, APIStatus
 
 # Create router for API endpoints
 router = APIRouter(
@@ -92,8 +92,12 @@ def list_apis_endpoint(
         status_model_filter = APIStatus[status_filter.value.upper()]
     
     apis = get_apis(db=db, skip=skip, limit=limit, status_filter=status_model_filter)
-    total = db.query(APIStatus).count() if not status_model_filter else \
-            db.query(APIStatus).filter(APIStatus == status_model_filter).count()
+    
+    # Get total count
+    if status_model_filter:
+        total = db.query(API).filter(API.status == status_model_filter).count()
+    else:
+        total = db.query(API).count()
     
     return {
         "total": total,
@@ -144,11 +148,13 @@ def get_api_endpoint(
     "/{api_id}",
     response_model=APIResponse,
     summary="Update an API",
-    description="Update an existing API's information",
+    description="Update an existing API's information with partial update support",
     responses={
         200: {"description": "API successfully updated"},
         404: {"description": "API not found"},
-        400: {"description": "Invalid request data"}
+        400: {"description": "Invalid request data or constraint violation"},
+        409: {"description": "Update would create duplicate service_name and version"},
+        422: {"description": "Validation error"}
     }
 )
 def update_api_endpoint(
@@ -157,20 +163,46 @@ def update_api_endpoint(
     db: Session = Depends(get_db)
 ):
     """
-    Update an existing API record.
+    Update an existing API record with partial update support.
     
     **Path Parameters:**
     - **api_id**: Unique identifier of the API to update
     
-    **Request Body:**
-    - Any combination of API fields to update (all optional)
+    **Request Body (all fields optional):**
+    - **name**: Human-readable name of the API
+    - **service_name**: Internal service identifier
+    - **version**: Semantic version (e.g., v1.0.0 or 1.0.0)
+    - **status**: Lifecycle status (draft, published, deprecated, retired)
+    - **description**: Detailed description of the API
+    - **base_url**: Base URL for the API
+    - **spec_url**: URL to the OpenAPI specification
+    - **owner_team**: Team responsible for the API
+    
+    **Note:** Only provided fields will be updated. Omitted fields remain unchanged.
     
     **Returns:**
-    - Updated API record
+    - Updated API record with all current values
     
     **Errors:**
     - 404: If API with the specified ID does not exist
+    - 409: If updating service_name or version creates a duplicate
     - 400: If update violates database constraints
+    - 422: If request data fails validation (e.g., invalid version format)
+    
+    **Examples:**
+    ```json
+    // Update only status
+    {
+      "status": "published"
+    }
+    
+    // Update multiple fields
+    {
+      "status": "published",
+      "base_url": "https://api.example.com/v2",
+      "description": "Updated API description"
+    }
+    ```
     """
     db_api = update_api(db=db, api_id=api_id, api_data=api_data)
     
@@ -187,10 +219,11 @@ def update_api_endpoint(
     "/{api_id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete an API",
-    description="Delete an API from the system",
+    description="Permanently delete an API and all associated data from the system",
     responses={
-        204: {"description": "API successfully deleted"},
-        404: {"description": "API not found"}
+        204: {"description": "API successfully deleted (no content returned)"},
+        404: {"description": "API not found"},
+        500: {"description": "Internal server error during deletion"}
     }
 )
 def delete_api_endpoint(
@@ -198,15 +231,38 @@ def delete_api_endpoint(
     db: Session = Depends(get_db)
 ):
     """
-    Delete an API record.
+    Permanently delete an API record and all associated data.
     
     **Path Parameters:**
     - **api_id**: Unique identifier of the API to delete
     
-    **Note:** This will cascade delete all associated versions and changes.
+    **⚠️ Warning:** This is a destructive operation that cannot be undone.
+    
+    **Cascade Deletion:**
+    This operation will permanently delete:
+    - The API record itself
+    - All API versions associated with this API
+    - All API changes/history associated with this API
+    - Any other related records (due to cascade constraints)
+    
+    **Returns:**
+    - 204 No Content (empty response body on success)
     
     **Errors:**
     - 404: If API with the specified ID does not exist
+    - 500: If an unexpected database error occurs during deletion
+    
+    **Best Practices:**
+    - Consider using status updates (e.g., "retired") instead of deletion for audit trails
+    - Ensure proper authorization checks before calling this endpoint in production
+    - Keep deletion logs for compliance and audit purposes
+    
+    **Example:**
+    ```
+    DELETE /apis/123
+    
+    Response: 204 No Content (empty body)
+    ```
     """
     success = delete_api(db=db, api_id=api_id)
     
