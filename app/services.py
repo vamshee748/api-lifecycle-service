@@ -5,8 +5,8 @@ from fastapi import HTTPException, status
 from typing import Optional, List
 import logging
 
-from app.models import API, APIStatus
-from app.schemas import APICreate, APIUpdate, APIResponse
+from app.models import API, APIStatus, APIChange, ChangeType
+from app.schemas import APICreate, APIUpdate, APIResponse, APIChangeCreate, APIChangeUpdate
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -303,4 +303,293 @@ def delete_api(db: Session, api_id: int) -> bool:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred while deleting the API"
+        )
+
+
+# ============================================================
+# API Change Service Functions
+# ============================================================
+
+def create_api_change(db: Session, change_data: APIChangeCreate) -> APIChange:
+    """
+    Log a new API change record.
+    
+    Creates a change tracking record for API version updates, new features,
+    breaking changes, and other modifications for governance and audit purposes.
+    
+    Args:
+        db: Database session
+        change_data: APIChangeCreate schema with change details
+        
+    Returns:
+        Created APIChange model instance
+        
+    Raises:
+        HTTPException: 
+            - 404 if referenced API does not exist
+            - 400 for validation errors
+            - 500 for unexpected database errors
+    """
+    try:
+        # Verify that the referenced API exists
+        api = get_api(db, change_data.api_id)
+        if not api:
+            logger.warning(f"Attempted to create change for non-existent API ID: {change_data.api_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"API with ID {change_data.api_id} not found"
+            )
+        
+        # Convert enum to model enum
+        change_type_model = ChangeType[change_data.change_type.value.upper()]
+        
+        # Create new change record
+        db_change = APIChange(
+            api_id=change_data.api_id,
+            from_version=change_data.from_version,
+            to_version=change_data.to_version,
+            change_type=change_type_model,
+            description=change_data.description,
+            details=change_data.details
+        )
+        
+        # Add to database
+        db.add(db_change)
+        db.commit()
+        db.refresh(db_change)
+        
+        logger.info(
+            f"Successfully logged API change: ID {db_change.id} for API {api.name} "
+            f"({change_data.from_version or 'initial'} -> {change_data.to_version}, "
+            f"Type: {change_data.change_type.value})"
+        )
+        
+        return db_change
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error creating API change: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Database integrity constraint violated. Please check your input data."
+        )
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error creating API change: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error creating API change: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+def get_api_change(db: Session, change_id: int) -> Optional[APIChange]:
+    """
+    Retrieve an API change record by ID.
+    
+    Args:
+        db: Database session
+        change_id: Change ID to retrieve
+        
+    Returns:
+        APIChange model instance if found, None otherwise
+    """
+    return db.query(APIChange).filter(APIChange.id == change_id).first()
+
+
+def get_api_changes(
+    db: Session,
+    api_id: Optional[int] = None,
+    change_type: Optional[ChangeType] = None,
+    skip: int = 0,
+    limit: int = 100
+) -> List[APIChange]:
+    """
+    Retrieve a list of API changes with optional filtering and pagination.
+    
+    Args:
+        db: Database session
+        api_id: Optional filter by specific API
+        change_type: Optional filter by change type
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of APIChange model instances
+    """
+    query = db.query(APIChange)
+    
+    if api_id is not None:
+        query = query.filter(APIChange.api_id == api_id)
+    
+    if change_type is not None:
+        query = query.filter(APIChange.change_type == change_type)
+    
+    # Order by most recent first
+    query = query.order_by(APIChange.created_at.desc())
+    
+    return query.offset(skip).limit(limit).all()
+
+
+def get_changes_by_api(
+    db: Session,
+    api_id: int,
+    skip: int = 0,
+    limit: int = 100
+) -> List[APIChange]:
+    """
+    Get all changes for a specific API.
+    
+    Args:
+        db: Database session
+        api_id: API ID to get changes for
+        skip: Number of records to skip
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of APIChange model instances for the specified API
+    """
+    return db.query(APIChange).filter(
+        APIChange.api_id == api_id
+    ).order_by(
+        APIChange.created_at.desc()
+    ).offset(skip).limit(limit).all()
+
+
+def get_breaking_changes(
+    db: Session,
+    api_id: Optional[int] = None,
+    skip: int = 0,
+    limit: int = 100
+) -> List[APIChange]:
+    """
+    Get breaking changes, optionally filtered by API.
+    
+    Useful for impact analysis and notification systems.
+    
+    Args:
+        db: Database session
+        api_id: Optional filter by specific API
+        skip: Number of records to skip
+        limit: Maximum number of records to return
+        
+    Returns:
+        List of APIChange model instances with breaking changes
+    """
+    query = db.query(APIChange).filter(
+        APIChange.change_type == ChangeType.BREAKING
+    )
+    
+    if api_id is not None:
+        query = query.filter(APIChange.api_id == api_id)
+    
+    return query.order_by(
+        APIChange.created_at.desc()
+    ).offset(skip).limit(limit).all()
+
+
+def update_api_change(
+    db: Session,
+    change_id: int,
+    change_data: APIChangeUpdate
+) -> Optional[APIChange]:
+    """
+    Update an existing API change record.
+    
+    Args:
+        db: Database session
+        change_id: Change ID to update
+        change_data: APIChangeUpdate schema with fields to update
+        
+    Returns:
+        Updated APIChange model instance if found, None otherwise
+        
+    Raises:
+        HTTPException: For database errors
+    """
+    try:
+        db_change = get_api_change(db, change_id)
+        
+        if not db_change:
+            return None
+        
+        # Get only the fields that are being updated
+        update_data = change_data.model_dump(exclude_unset=True)
+        
+        if not update_data:
+            logger.warning(f"Update called for change {change_id} with no fields to update")
+            return db_change
+        
+        # Apply updates
+        for field, value in update_data.items():
+            # Convert enum if needed
+            if field == 'change_type' and value is not None:
+                value = ChangeType[value.value.upper()]
+            setattr(db_change, field, value)
+        
+        db.commit()
+        db.refresh(db_change)
+        
+        logger.info(
+            f"Successfully updated API change ID: {change_id} "
+            f"(Fields: {', '.join(update_data.keys())})"
+        )
+        
+        return db_change
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error updating API change {change_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+
+
+def delete_api_change(db: Session, change_id: int) -> bool:
+    """
+    Delete an API change record.
+    
+    Args:
+        db: Database session
+        change_id: Change ID to delete
+        
+    Returns:
+        True if deleted, False if not found
+        
+    Raises:
+        HTTPException: For database errors
+    """
+    try:
+        db_change = get_api_change(db, change_id)
+        
+        if not db_change:
+            logger.warning(f"Attempted to delete non-existent change ID: {change_id}")
+            return False
+        
+        db.delete(db_change)
+        db.commit()
+        
+        logger.info(f"Successfully deleted API change ID: {change_id}")
+        
+        return True
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error deleting API change {change_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred while deleting the change"
         )

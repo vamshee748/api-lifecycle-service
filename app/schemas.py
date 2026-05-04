@@ -251,6 +251,16 @@ class APIChangeResponse(APIChangeBase, TimestampMixin):
     )
 
 
+class APIChangeListResponse(BaseModel):
+    """Schema for paginated API change list response"""
+    total: int = Field(..., description="Total number of changes")
+    page: int = Field(..., ge=1, description="Current page number")
+    page_size: int = Field(..., ge=1, le=1000, description="Number of items per page")
+    data: List[APIChangeResponse] = Field(..., description="List of API changes")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # ============================================================
 # Governance Policy Schemas
 # ============================================================

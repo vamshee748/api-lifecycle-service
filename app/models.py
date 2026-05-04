@@ -95,17 +95,39 @@ class APIVersion(Base, BaseModel):
 
 # API Change Model
 class APIChange(Base, BaseModel):
+    """
+    API Change Model - Records changes between API versions
+    
+    Tracks version transitions, change types, and detailed change information
+    for governance, auditing, and impact analysis.
+    """
     __tablename__ = "api_changes"
     
-    api_id = Column(Integer, ForeignKey("apis.id"), nullable=False)
-    from_version = Column(String(50))
-    to_version = Column(String(50))
-    change_type = Column(SQLEnum(ChangeType))
-    description = Column(Text)
-    details = Column(Text)  # JSON field for detailed diff
+    # Foreign key relationship
+    api_id = Column(Integer, ForeignKey("apis.id", ondelete="CASCADE"), nullable=False, index=True, comment="Reference to the API")
+    
+    # Version tracking
+    from_version = Column(String(50), nullable=True, comment="Source version (null for initial version)")
+    to_version = Column(String(50), nullable=False, index=True, comment="Target/current version")
+    
+    # Change metadata
+    change_type = Column(SQLEnum(ChangeType), nullable=False, index=True, comment="Type of change: breaking, non_breaking, or addition")
+    description = Column(Text, nullable=False, comment="Human-readable description of what changed")
+    details = Column(Text, nullable=True, comment="Detailed change information in JSON format (diffs, impacts, etc.)")
     
     # Relationships
     api = relationship("API", back_populates="changes")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_change_type_created', 'change_type', 'created_at'),
+        Index('idx_change_api_versions', 'api_id', 'from_version', 'to_version'),
+        Index('idx_change_to_version', 'to_version'),
+        {'comment': 'API change tracking for version management and governance'}
+    )
+    
+    def __repr__(self):
+        return f"<APIChange(id={self.id}, api_id={self.api_id}, {self.from_version or 'initial'}->{self.to_version}, type='{self.change_type.value}')>"
 
 
 # Governance Policy Model
