@@ -25,6 +25,13 @@ class ChangeType(str, enum.Enum):
     ADDITION = "addition"
 
 
+class PolicySeverity(str, enum.Enum):
+    """Enumeration for policy severity levels"""
+    CRITICAL = "critical"
+    WARNING = "warning"
+    INFO = "info"
+
+
 # ============================================================
 # Base model class with common fields
 # ============================================================
@@ -130,13 +137,45 @@ class APIChange(Base, BaseModel):
         return f"<APIChange(id={self.id}, api_id={self.api_id}, {self.from_version or 'initial'}->{self.to_version}, type='{self.change_type.value}')>"
 
 
-# Governance Policy Model
+# ============================================================
+# Governance Policy Model - API governance and compliance rules
+# ============================================================
+
 class GovernancePolicy(Base, BaseModel):
+    """
+    Governance Policy Model - Defines rules and policies for API governance
+    
+    Manages organizational policies for API development, change management,
+    and compliance requirements. Supports configurable rules with severity levels
+    for enforcement and auditing.
+    """
     __tablename__ = "governance_policies"
     
-    name = Column(String(255), nullable=False)
-    description = Column(Text)
-    rule_type = Column(String(100))
-    rule_config = Column(Text)  # JSON field for rule configuration
-    is_active = Column(Boolean, default=True)
-    severity = Column(String(50))  # critical, warning, info
+    # Core fields
+    name = Column(String(255), nullable=False, unique=True, index=True, comment="Unique name of the policy")
+    description = Column(Text, nullable=True, comment="Detailed description of the policy's purpose and requirements")
+    
+    # Rule configuration
+    rule_type = Column(String(100), nullable=False, index=True, comment="Type of rule (e.g., approval_required, naming_convention, versioning_standard)")
+    rule_config = Column(Text, nullable=True, comment="JSON configuration for the rule with specific parameters")
+    
+    # Policy status and enforcement
+    is_active = Column(Boolean, default=True, nullable=False, index=True, comment="Whether this policy is currently enforced")
+    severity = Column(SQLEnum(PolicySeverity), default=PolicySeverity.WARNING, nullable=False, index=True, comment="Severity level for policy violations")
+    
+    # Metadata fields
+    category = Column(String(100), nullable=True, index=True, comment="Policy category (e.g., security, compliance, standards)")
+    owner_team = Column(String(255), nullable=True, index=True, comment="Team responsible for this policy")
+    enforcement_level = Column(String(50), default="advisory", nullable=False, comment="Enforcement level: blocking, advisory, or monitoring")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_policy_active_severity', 'is_active', 'severity'),
+        Index('idx_policy_rule_type_active', 'rule_type', 'is_active'),
+        Index('idx_policy_category_active', 'category', 'is_active'),
+        Index('idx_policy_owner_active', 'owner_team', 'is_active'),
+        {'comment': 'Governance policies for API lifecycle management and compliance'}
+    )
+    
+    def __repr__(self):
+        return f"<GovernancePolicy(id={self.id}, name='{self.name}', rule_type='{self.rule_type}', severity='{self.severity.value}', active={self.is_active})>"

@@ -28,6 +28,13 @@ class SeverityEnum(str, Enum):
     INFO = "info"
 
 
+class EnforcementLevelEnum(str, Enum):
+    """Policy enforcement level enumeration"""
+    BLOCKING = "blocking"
+    ADVISORY = "advisory"
+    MONITORING = "monitoring"
+
+
 # ============================================================
 # Base Schemas
 # ============================================================
@@ -269,12 +276,56 @@ class GovernancePolicyBase(BaseModel):
     """Base schema for governance policy"""
     name: str = Field(..., min_length=1, max_length=255, description="Policy name", examples=["Breaking Change Approval"])
     description: Optional[str] = Field(None, description="Detailed description of the policy")
-    rule_type: str = Field(..., max_length=100, description="Type of rule", examples=["approval_required", "naming_convention"])
+    rule_type: str = Field(..., max_length=100, description="Type of rule", examples=["approval_required", "naming_convention", "versioning_standard"])
     rule_config: Optional[str] = Field(None, description="Rule configuration in JSON format")
     is_active: bool = Field(default=True, description="Whether this policy is currently active")
     severity: SeverityEnum = Field(default=SeverityEnum.WARNING, description="Severity level of policy violations")
+    category: Optional[str] = Field(None, max_length=100, description="Policy category", examples=["security", "compliance", "standards"])
+    owner_team: Optional[str] = Field(None, max_length=255, description="Team responsible for this policy", examples=["architecture-team", "security-team"])
+    enforcement_level: str = Field(default="advisory", max_length=50, description="Enforcement level", examples=["blocking", "advisory", "monitoring"])
 
-    model_config = ConfigDict(from_attributes=True)
+    @validator('rule_type')
+    def validate_rule_type(cls, v):
+        """Validate rule type format"""
+        if v and not v.replace('_', '').isalnum():
+            raise ValueError('Rule type must contain only alphanumeric characters and underscores')
+        return v
+
+    @validator('enforcement_level')
+    def validate_enforcement_level(cls, v):
+        """Validate enforcement level"""
+        valid_levels = {'blocking', 'advisory', 'monitoring'}
+        if v.lower() not in valid_levels:
+            raise ValueError(f'Enforcement level must be one of: {", ".join(valid_levels)}')
+        return v.lower()
+
+    @validator('rule_config')
+    def validate_rule_config(cls, v):
+        """Validate rule_config is valid JSON if provided"""
+        if v is not None and v.strip():
+            import json
+            try:
+                json.loads(v)
+            except json.JSONDecodeError:
+                raise ValueError('rule_config must be valid JSON')
+        return v
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "name": "Breaking Change Approval",
+                "description": "All breaking changes require approval from architecture team",
+                "rule_type": "approval_required",
+                "rule_config": "{\"approvers\": [\"architecture-team\"], \"min_approvals\": 2}",
+                "is_active": True,
+                "severity": "critical",
+                "category": "compliance",
+                "owner_team": "architecture-team",
+                "enforcement_level": "blocking"
+            }
+        }
+    )
 
 
 class GovernancePolicyCreate(GovernancePolicyBase):
@@ -290,6 +341,37 @@ class GovernancePolicyUpdate(BaseModel):
     rule_config: Optional[str] = Field(None, description="Rule configuration in JSON format")
     is_active: Optional[bool] = Field(None, description="Whether this policy is currently active")
     severity: Optional[SeverityEnum] = Field(None, description="Severity level of policy violations")
+    category: Optional[str] = Field(None, max_length=100, description="Policy category")
+    owner_team: Optional[str] = Field(None, max_length=255, description="Team responsible for this policy")
+    enforcement_level: Optional[str] = Field(None, max_length=50, description="Enforcement level")
+
+    @validator('rule_type')
+    def validate_rule_type(cls, v):
+        """Validate rule type format"""
+        if v and not v.replace('_', '').isalnum():
+            raise ValueError('Rule type must contain only alphanumeric characters and underscores')
+        return v
+
+    @validator('enforcement_level')
+    def validate_enforcement_level(cls, v):
+        """Validate enforcement level"""
+        if v is not None:
+            valid_levels = {'blocking', 'advisory', 'monitoring'}
+            if v.lower() not in valid_levels:
+                raise ValueError(f'Enforcement level must be one of: {", ".join(valid_levels)}')
+            return v.lower()
+        return v
+
+    @validator('rule_config')
+    def validate_rule_config(cls, v):
+        """Validate rule_config is valid JSON if provided"""
+        if v is not None and v.strip():
+            import json
+            try:
+                json.loads(v)
+            except json.JSONDecodeError:
+                raise ValueError('rule_config must be valid JSON')
+        return v
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -309,11 +391,24 @@ class GovernancePolicyResponse(GovernancePolicyBase, TimestampMixin):
                 "rule_config": "{\"approvers\": [\"architecture-team\"], \"min_approvals\": 2}",
                 "is_active": True,
                 "severity": "critical",
+                "category": "compliance",
+                "owner_team": "architecture-team",
+                "enforcement_level": "blocking",
                 "created_at": "2026-04-20T10:30:00Z",
                 "updated_at": None
             }
         }
     )
+
+
+class GovernancePolicyListResponse(BaseModel):
+    """Schema for paginated governance policy list response"""
+    total: int = Field(..., description="Total number of policies")
+    page: int = Field(..., ge=1, description="Current page number")
+    page_size: int = Field(..., ge=1, le=1000, description="Number of items per page")
+    data: List[GovernancePolicyResponse] = Field(..., description="List of governance policies")
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================================
