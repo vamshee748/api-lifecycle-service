@@ -2,11 +2,16 @@
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from fastapi import HTTPException, status
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
+import json
+import re
 
-from app.models import API, APIStatus, APIChange, ChangeType
-from app.schemas import APICreate, APIUpdate, APIResponse, APIChangeCreate, APIChangeUpdate
+from app.models import API, APIStatus, APIChange, ChangeType, GovernancePolicy, PolicySeverity
+from app.schemas import (
+    APICreate, APIUpdate, APIResponse, APIChangeCreate, APIChangeUpdate,
+    GovernancePolicyCreate, GovernancePolicyUpdate
+)
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -593,3 +598,681 @@ def delete_api_change(db: Session, change_id: int) -> bool:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected database error occurred while deleting the change"
         )
+
+
+# ============================================================
+# Governance Policy Service Functions
+# ============================================================
+
+def validate_policy_rule_config(rule_type: str, rule_config: Optional[str]) -> None:
+    """
+    Validate policy rule configuration based on rule type.
+    
+    This function performs deep validation of rule configurations to ensure
+    they contain the required fields and valid values for each rule type.
+    
+    Args:
+        rule_type: The type of governance rule
+        rule_config: JSON string containing rule configuration
+        
+    Raises:
+        HTTPException: 400 if rule configuration is invalid
+    """
+    if not rule_config:
+        return
+    
+    try:
+        config = json.loads(rule_config)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid JSON in rule_config: {str(e)}"
+        )
+    
+    # Validate based on rule type
+    if rule_type == "approval_required":
+        # Validate approval configuration
+        if "approvers" not in config:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="approval_required rule must specify 'approvers' list"
+            )
+        
+        if not isinstance(config["approvers"], list) or len(config["approvers"]) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'approvers' must be a non-empty list"
+            )
+        
+        if "min_approvals" in config:
+            min_approvals = config["min_approvals"]
+            if not isinstance(min_approvals, int) or min_approvals < 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'min_approvals' must be a positive integer"
+                )
+            
+            if min_approvals > len(config["approvers"]):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'min_approvals' cannot exceed number of approvers"
+                )
+    
+    elif rule_type == "naming_convention":
+        # Validate naming convention patterns
+        if "pattern" not in config:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="naming_convention rule must specify 'pattern'"
+            )
+        
+        # Test if pattern is a valid regex
+        try:
+            re.compile(config["pattern"])
+        except re.error as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid regex pattern: {str(e)}"
+            )
+        
+        # Validate optional fields
+        if "field" in config:
+            valid_fields = {"name", "service_name", "endpoint", "parameter"}
+            if config["field"] not in valid_fields:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"'field' must be one of: {', '.join(valid_fields)}"
+                )
+    
+    elif rule_type == "versioning_standard":
+        # Validate versioning standards
+        if "format" not in config:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="versioning_standard rule must specify 'format'"
+            )
+        
+        valid_formats = {"semver", "date", "sequential"}
+        if config["format"] not in valid_formats:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'format' must be one of: {', '.join(valid_formats)}"
+            )
+        
+        if config["format"] == "semver" and "prefix" in config:
+            if not isinstance(config["prefix"], str):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'prefix' must be a string"
+                )
+    
+    elif rule_type == "deprecation_period":
+        # Validate deprecation period rules
+        if "min_days" not in config:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="deprecation_period rule must specify 'min_days'"
+            )
+        
+        min_days = config["min_days"]
+        if not isinstance(min_days, int) or min_days < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'min_days' must be a non-negative integer"
+            )
+        
+        if "notification_channels" in config:
+            if not isinstance(config["notification_channels"], list):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'notification_channels' must be a list"
+                )
+    
+    elif rule_type == "rate_limit":
+        # Validate rate limiting rules
+        if "max_requests" not in config or "time_window" not in config:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="rate_limit rule must specify 'max_requests' and 'time_window'"
+            )
+        
+        if not isinstance(config["max_requests"], int) or config["max_requests"] < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'max_requests' must be a positive integer"
+            )
+        
+        if not isinstance(config["time_window"], str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="'time_window' must be a string (e.g., '1m', '1h', '1d')"
+            )
+    
+    elif rule_type == "security_scan":
+        # Validate security scan requirements
+        valid_scanners = {"owasp", "snyk", "sonarqube", "checkmarx"}
+        if "scanner" in config and config["scanner"] not in valid_scanners:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'scanner' must be one of: {', '.join(valid_scanners)}"
+            )
+        
+        if "min_score" in config:
+            if not isinstance(config["min_score"], (int, float)) or not 0 <= config["min_score"] <= 100:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="'min_score' must be a number between 0 and 100"
+                )
+    
+    logger.info(f"Policy rule configuration validated successfully for rule_type: {rule_type}")
+
+
+def validate_policy_against_change(
+    db: Session,
+    policy: GovernancePolicy,
+    change: APIChange
+) -> Dict[str, Any]:
+    """
+    Validate an API change against a governance policy.
+    
+    This function checks if an API change complies with a specific policy
+    and returns detailed validation results.
+    
+    Args:
+        db: Database session
+        policy: Governance policy to validate against
+        change: API change to validate
+        
+    Returns:
+        Dict containing validation results:
+        {
+            "policy_id": int,
+            "policy_name": str,
+            "compliant": bool,
+            "severity": str,
+            "enforcement_level": str,
+            "violations": List[str],
+            "recommendations": List[str]
+        }
+    """
+    result = {
+        "policy_id": policy.id,
+        "policy_name": policy.name,
+        "compliant": True,
+        "severity": policy.severity.value,
+        "enforcement_level": policy.enforcement_level,
+        "violations": [],
+        "recommendations": []
+    }
+    
+    # Parse rule configuration
+    try:
+        rule_config = json.loads(policy.rule_config) if policy.rule_config else {}
+    except json.JSONDecodeError:
+        logger.error(f"Invalid JSON in policy {policy.id} rule_config")
+        rule_config = {}
+    
+    # Validate based on rule type
+    if policy.rule_type == "approval_required":
+        # Check if breaking changes require approval
+        if change.change_type == ChangeType.BREAKING:
+            result["compliant"] = False
+            result["violations"].append(
+                f"Breaking change requires approval from: {', '.join(rule_config.get('approvers', []))}"
+            )
+            min_approvals = rule_config.get("min_approvals", 1)
+            result["recommendations"].append(
+                f"Obtain at least {min_approvals} approval(s) before proceeding"
+            )
+    
+    elif policy.rule_type == "versioning_standard":
+        # Validate version format
+        version_format = rule_config.get("format", "semver")
+        to_version = change.to_version
+        
+        if version_format == "semver":
+            pattern = r'^v?\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$'
+            if not re.match(pattern, to_version):
+                result["compliant"] = False
+                result["violations"].append(
+                    f"Version '{to_version}' does not follow semantic versioning format"
+                )
+                result["recommendations"].append(
+                    "Use semantic versioning format: MAJOR.MINOR.PATCH (e.g., 1.2.3 or v1.2.3)"
+                )
+        
+        elif version_format == "date":
+            pattern = r'^\d{4}\.\d{2}\.\d{2}$'
+            if not re.match(pattern, to_version):
+                result["compliant"] = False
+                result["violations"].append(
+                    f"Version '{to_version}' does not follow date-based format"
+                )
+                result["recommendations"].append(
+                    "Use date-based format: YYYY.MM.DD (e.g., 2026.05.06)"
+                )
+    
+    elif policy.rule_type == "naming_convention":
+        # Validate naming conventions
+        pattern = rule_config.get("pattern", "")
+        field = rule_config.get("field", "name")
+        
+        # Get the API to check naming
+        api = db.query(API).filter(API.id == change.api_id).first()
+        if api:
+            value = getattr(api, field, "")
+            if pattern and not re.match(pattern, value):
+                result["compliant"] = False
+                result["violations"].append(
+                    f"API {field} '{value}' does not match required pattern: {pattern}"
+                )
+                result["recommendations"].append(
+                    f"Update API {field} to match the naming convention pattern"
+                )
+    
+    elif policy.rule_type == "deprecation_period":
+        # Check deprecation timing
+        if change.change_type == ChangeType.BREAKING:
+            min_days = rule_config.get("min_days", 90)
+            result["recommendations"].append(
+                f"Ensure a deprecation notice is issued at least {min_days} days before retirement"
+            )
+            
+            channels = rule_config.get("notification_channels", ["email", "slack"])
+            result["recommendations"].append(
+                f"Notify stakeholders via: {', '.join(channels)}"
+            )
+    
+    logger.info(
+        f"Policy validation completed - Policy: {policy.name}, "
+        f"Change ID: {change.id}, Compliant: {result['compliant']}"
+    )
+    
+    return result
+
+
+def validate_change_against_policies(
+    db: Session,
+    change: APIChange,
+    active_only: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Validate an API change against all applicable governance policies.
+    
+    Args:
+        db: Database session
+        change: API change to validate
+        active_only: Only check active policies (default: True)
+        
+    Returns:
+        List of validation results for each applicable policy
+    """
+    query = db.query(GovernancePolicy)
+    
+    if active_only:
+        query = query.filter(GovernancePolicy.is_active == True)
+    
+    policies = query.all()
+    
+    results = []
+    for policy in policies:
+        validation_result = validate_policy_against_change(db, policy, change)
+        results.append(validation_result)
+    
+    logger.info(
+        f"Validated change ID {change.id} against {len(results)} policies. "
+        f"Non-compliant: {sum(1 for r in results if not r['compliant'])}"
+    )
+    
+    return results
+
+
+def create_governance_policy(db: Session, policy_data: GovernancePolicyCreate) -> GovernancePolicy:
+    """
+    Create a new governance policy with validation.
+    
+    Args:
+        db: Database session
+        policy_data: GovernancePolicyCreate schema with policy details
+        
+    Returns:
+        Created GovernancePolicy model instance
+        
+    Raises:
+        HTTPException: 
+            - 409 if policy with same name already exists
+            - 400 for validation errors
+            - 500 for unexpected database errors
+    """
+    try:
+        # Check if policy with same name already exists
+        existing_policy = db.query(GovernancePolicy).filter(
+            GovernancePolicy.name == policy_data.name
+        ).first()
+        
+        if existing_policy:
+            logger.warning(f"Attempted to create duplicate policy: {policy_data.name}")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Policy with name '{policy_data.name}' already exists"
+            )
+        
+        # Validate rule configuration
+        validate_policy_rule_config(policy_data.rule_type, policy_data.rule_config)
+        
+        # Convert severity enum to model enum
+        severity_model = PolicySeverity[policy_data.severity.value.upper()]
+        
+        # Create new policy instance
+        db_policy = GovernancePolicy(
+            name=policy_data.name,
+            description=policy_data.description,
+            rule_type=policy_data.rule_type,
+            rule_config=policy_data.rule_config,
+            is_active=policy_data.is_active,
+            severity=severity_model,
+            category=policy_data.category,
+            owner_team=policy_data.owner_team,
+            enforcement_level=policy_data.enforcement_level
+        )
+        
+        # Add to database
+        db.add(db_policy)
+        db.commit()
+        db.refresh(db_policy)
+        
+        logger.info(
+            f"Successfully created governance policy: {db_policy.name} "
+            f"(ID: {db_policy.id}, Rule Type: {db_policy.rule_type}, "
+            f"Severity: {db_policy.severity.value}, Active: {db_policy.is_active})"
+        )
+        
+        return db_policy
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 409 conflict or 400 validation)
+        raise
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error creating governance policy: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Database integrity constraint violated. Check policy name uniqueness."
+        )
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error creating governance policy: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error creating governance policy: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+def get_governance_policy(db: Session, policy_id: int) -> Optional[GovernancePolicy]:
+    """
+    Retrieve a governance policy by ID.
+    
+    Args:
+        db: Database session
+        policy_id: Policy ID to retrieve
+        
+    Returns:
+        GovernancePolicy model instance if found, None otherwise
+    """
+    return db.query(GovernancePolicy).filter(GovernancePolicy.id == policy_id).first()
+
+
+def get_governance_policies(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    active_only: Optional[bool] = None,
+    category: Optional[str] = None,
+    rule_type: Optional[str] = None,
+    severity: Optional[PolicySeverity] = None
+) -> List[GovernancePolicy]:
+    """
+    Retrieve a list of governance policies with optional filtering and pagination.
+    
+    Args:
+        db: Database session
+        skip: Number of records to skip (for pagination)
+        limit: Maximum number of records to return
+        active_only: Filter by active status (None = all, True = active, False = inactive)
+        category: Optional category filter
+        rule_type: Optional rule type filter
+        severity: Optional severity filter
+        
+    Returns:
+        List of GovernancePolicy model instances
+    """
+    query = db.query(GovernancePolicy)
+    
+    # Apply filters
+    if active_only is not None:
+        query = query.filter(GovernancePolicy.is_active == active_only)
+    
+    if category:
+        query = query.filter(GovernancePolicy.category == category)
+    
+    if rule_type:
+        query = query.filter(GovernancePolicy.rule_type == rule_type)
+    
+    if severity:
+        query = query.filter(GovernancePolicy.severity == severity)
+    
+    # Order by severity (critical first), then by name
+    query = query.order_by(
+        GovernancePolicy.severity.desc(),
+        GovernancePolicy.name.asc()
+    )
+    
+    return query.offset(skip).limit(limit).all()
+
+
+def update_governance_policy(
+    db: Session,
+    policy_id: int,
+    policy_data: GovernancePolicyUpdate
+) -> Optional[GovernancePolicy]:
+    """
+    Update an existing governance policy with validation.
+    
+    Args:
+        db: Database session
+        policy_id: Policy ID to update
+        policy_data: GovernancePolicyUpdate schema with fields to update
+        
+    Returns:
+        Updated GovernancePolicy model instance if found, None otherwise
+        
+    Raises:
+        HTTPException: 
+            - 404 if policy not found
+            - 409 if update causes duplicate name
+            - 400 for validation errors
+            - 500 for unexpected database errors
+    """
+    try:
+        db_policy = get_governance_policy(db, policy_id)
+        
+        if not db_policy:
+            return None
+        
+        # Get only the fields that are being updated
+        update_data = policy_data.model_dump(exclude_unset=True)
+        
+        if not update_data:
+            logger.warning(f"Update called for policy {policy_id} with no fields to update")
+            return db_policy
+        
+        # Check for duplicate name if name is being updated
+        if 'name' in update_data and update_data['name'] != db_policy.name:
+            existing_policy = db.query(GovernancePolicy).filter(
+                GovernancePolicy.name == update_data['name'],
+                GovernancePolicy.id != policy_id
+            ).first()
+            
+            if existing_policy:
+                logger.warning(
+                    f"Attempted to update policy {policy_id} to duplicate name: "
+                    f"{update_data['name']} (conflicts with policy {existing_policy.id})"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Policy with name '{update_data['name']}' already exists"
+                )
+        
+        # Validate rule configuration if being updated
+        rule_type_to_validate = update_data.get('rule_type', db_policy.rule_type)
+        rule_config_to_validate = update_data.get('rule_config', db_policy.rule_config)
+        
+        if 'rule_type' in update_data or 'rule_config' in update_data:
+            validate_policy_rule_config(rule_type_to_validate, rule_config_to_validate)
+        
+        # Convert severity enum if provided
+        if 'severity' in update_data:
+            update_data['severity'] = PolicySeverity[update_data['severity'].value.upper()]
+        
+        # Apply updates
+        for field, value in update_data.items():
+            setattr(db_policy, field, value)
+        
+        db.commit()
+        db.refresh(db_policy)
+        
+        logger.info(
+            f"Successfully updated governance policy ID: {policy_id} "
+            f"(Fields: {', '.join(update_data.keys())})"
+        )
+        
+        return db_policy
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 409 conflict or 400 validation)
+        raise
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error updating governance policy {policy_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Database integrity constraint violated. Check policy name uniqueness."
+        )
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error updating governance policy {policy_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Unexpected error updating governance policy {policy_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
+
+
+def delete_governance_policy(db: Session, policy_id: int) -> bool:
+    """
+    Delete a governance policy.
+    
+    Args:
+        db: Database session
+        policy_id: Policy ID to delete
+        
+    Returns:
+        True if deleted, False if not found
+        
+    Raises:
+        HTTPException: For database errors
+    """
+    try:
+        db_policy = get_governance_policy(db, policy_id)
+        
+        if not db_policy:
+            logger.warning(f"Attempted to delete non-existent policy ID: {policy_id}")
+            return False
+        
+        # Log details before deletion for audit trail
+        policy_name = db_policy.name
+        policy_rule_type = db_policy.rule_type
+        policy_active = db_policy.is_active
+        
+        db.delete(db_policy)
+        db.commit()
+        
+        logger.info(
+            f"Successfully deleted governance policy ID: {policy_id} "
+            f"(Name: '{policy_name}', Rule Type: '{policy_rule_type}', Active: {policy_active})"
+        )
+        
+        return True
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error deleting governance policy {policy_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred while deleting the policy"
+        )
+
+
+def toggle_policy_status(db: Session, policy_id: int, is_active: bool) -> Optional[GovernancePolicy]:
+    """
+    Toggle the active status of a governance policy.
+    
+    This is a convenience function for enabling/disabling policies without
+    a full update operation.
+    
+    Args:
+        db: Database session
+        policy_id: Policy ID to toggle
+        is_active: New active status
+        
+    Returns:
+        Updated GovernancePolicy if found, None otherwise
+        
+    Raises:
+        HTTPException: For database errors
+    """
+    try:
+        db_policy = get_governance_policy(db, policy_id)
+        
+        if not db_policy:
+            return None
+        
+        old_status = db_policy.is_active
+        db_policy.is_active = is_active
+        
+        db.commit()
+        db.refresh(db_policy)
+        
+        logger.info(
+            f"Toggled policy ID: {policy_id} status from {old_status} to {is_active}"
+        )
+        
+        return db_policy
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error toggling policy {policy_id} status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+
