@@ -7,11 +7,13 @@ import logging
 import json
 import re
 
-from app.models import API, APIStatus, APIChange, ChangeType, GovernancePolicy, PolicySeverity
+from app.models import API, APIStatus, APIChange, ChangeType, GovernancePolicy, PolicySeverity, APIUsageAnalytics
 from app.schemas import (
     APICreate, APIUpdate, APIResponse, APIChangeCreate, APIChangeUpdate,
-    GovernancePolicyCreate, GovernancePolicyUpdate
+    GovernancePolicyCreate, GovernancePolicyUpdate, AnalyticsCreate, AnalyticsUpdate
 )
+from sqlalchemy import func, and_, or_
+from datetime import datetime, timedelta
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -1275,4 +1277,459 @@ def toggle_policy_status(db: Session, policy_id: int, is_active: bool) -> Option
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected database error occurred"
         )
+
+
+# ============================================================
+# Analytics Service Functions
+# ============================================================
+
+def create_analytics_record(db: Session, analytics_data: AnalyticsCreate) -> APIUsageAnalytics:
+    """
+    Create a new analytics record for API usage tracking.
+    
+    Args:
+        db: Database session
+        analytics_data: AnalyticsCreate schema with usage metrics
+        
+    Returns:
+        Created APIUsageAnalytics model instance
+        
+    Raises:
+        HTTPException: 
+            - 404 if referenced API not found
+            - 400 for validation errors
+            - 500 for unexpected database errors
+    """
+    try:
+        # Verify API exists
+        api = db.query(API).filter(API.id == analytics_data.api_id).first()
+        if not api:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"API with ID {analytics_data.api_id} not found"
+            )
+        
+        # Create analytics record
+        db_analytics = APIUsageAnalytics(
+            api_id=analytics_data.api_id,
+            endpoint=analytics_data.endpoint,
+            http_method=analytics_data.http_method,
+            request_count=analytics_data.request_count,
+            success_count=analytics_data.success_count,
+            error_count=analytics_data.error_count,
+            avg_response_time_ms=analytics_data.avg_response_time_ms,
+            min_response_time_ms=analytics_data.min_response_time_ms,
+            max_response_time_ms=analytics_data.max_response_time_ms,
+            tracked_date=analytics_data.tracked_date,
+            consumer_id=analytics_data.consumer_id,
+            consumer_name=analytics_data.consumer_name,
+            environment=analytics_data.environment,
+            region=analytics_data.region,
+            status_2xx_count=analytics_data.status_2xx_count,
+            status_4xx_count=analytics_data.status_4xx_count,
+            status_5xx_count=analytics_data.status_5xx_count,
+            total_request_size_bytes=analytics_data.total_request_size_bytes,
+            total_response_size_bytes=analytics_data.total_response_size_bytes,
+            metadata=analytics_data.metadata
+        )
+        
+        db.add(db_analytics)
+        db.commit()
+        db.refresh(db_analytics)
+        
+        logger.info(
+            f"Created analytics record: API {analytics_data.api_id}, "
+            f"Endpoint: {analytics_data.endpoint}, Requests: {analytics_data.request_count}"
+        )
+        
+        return db_analytics
+        
+    except HTTPException:
+        raise
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.error(f"Integrity error creating analytics record: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Analytics record with this combination already exists or constraint violated"
+        )
+        
+    except SQLAlchemyError as e:
+        db.rollback()
+        logger.error(f"Database error creating analytics record: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected database error occurred"
+        )
+
+
+def get_analytics_record(db: Session, analytics_id: int) -> Optional[APIUsageAnalytics]:
+    """
+    Retrieve an analytics record by ID.
+    
+    Args:
+        db: Database session
+        analytics_id: Analytics record ID
+        
+    Returns:
+        APIUsageAnalytics instance if found, None otherwise
+    """
+    return db.query(APIUsageAnalytics).filter(APIUsageAnalytics.id == analytics_id).first()
+
+
+def get_analytics_records(
+    db: Session,
+    skip: int = 0,
+    limit: int = 100,
+    api_id: Optional[int] = None,
+    endpoint: Optional[str] = None,
+    environment: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None
+) -> List[APIUsageAnalytics]:
+    """
+    Retrieve analytics records with optional filtering.
+    
+    Args:
+        db: Database session
+        skip: Number of records to skip
+        limit: Maximum records to return
+        api_id: Filter by API ID
+        endpoint: Filter by endpoint
+        environment: Filter by environment
+        start_date: Filter by start date
+        end_date: Filter by end date
+        
+    Returns:
+        List of APIUsageAnalytics instances
+    """
+    query = db.query(APIUsageAnalytics)
+    
+    if api_id:
+        query = query.filter(APIUsageAnalytics.api_id == api_id)
+    
+    if endpoint:
+        query = query.filter(APIUsageAnalytics.endpoint == endpoint)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    query = query.order_by(APIUsageAnalytics.tracked_date.desc())
+    
+    return query.offset(skip).limit(limit).all()
+
+
+def get_analytics_summary(
+    db: Session,
+    api_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    environment: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Get aggregated analytics summary.
+    
+    Args:
+        db: Database session
+        api_id: Optional API ID filter
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+        environment: Optional environment filter
+        
+    Returns:
+        Dictionary with aggregated analytics data
+    """
+    query = db.query(
+        func.sum(APIUsageAnalytics.request_count).label('total_requests'),
+        func.sum(APIUsageAnalytics.success_count).label('total_success'),
+        func.sum(APIUsageAnalytics.error_count).label('total_errors'),
+        func.avg(APIUsageAnalytics.avg_response_time_ms).label('avg_response_time'),
+        func.count(func.distinct(APIUsageAnalytics.consumer_id)).label('unique_consumers'),
+        func.count(func.distinct(APIUsageAnalytics.endpoint)).label('unique_endpoints'),
+        func.min(APIUsageAnalytics.tracked_date).label('date_range_start'),
+        func.max(APIUsageAnalytics.tracked_date).label('date_range_end')
+    )
+    
+    if api_id:
+        query = query.filter(APIUsageAnalytics.api_id == api_id)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    result = query.first()
+    
+    total_requests = result.total_requests or 0
+    total_success = result.total_success or 0
+    total_errors = result.total_errors or 0
+    
+    return {
+        "api_id": api_id,
+        "total_requests": total_requests,
+        "total_success": total_success,
+        "total_errors": total_errors,
+        "avg_response_time_ms": float(result.avg_response_time) if result.avg_response_time else None,
+        "overall_error_rate": (total_errors / total_requests * 100) if total_requests > 0 else 0.0,
+        "overall_success_rate": (total_success / total_requests * 100) if total_requests > 0 else 0.0,
+        "unique_consumers": result.unique_consumers or 0,
+        "unique_endpoints": result.unique_endpoints or 0,
+        "date_range_start": result.date_range_start,
+        "date_range_end": result.date_range_end
+    }
+
+
+def get_endpoint_analytics(
+    db: Session,
+    api_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    environment: Optional[str] = None,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Get analytics aggregated by endpoint.
+    
+    Args:
+        db: Database session
+        api_id: Optional API ID filter
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+        environment: Optional environment filter
+        limit: Maximum number of endpoints to return
+        
+    Returns:
+        List of dictionaries with per-endpoint analytics
+    """
+    query = db.query(
+        APIUsageAnalytics.endpoint,
+        APIUsageAnalytics.http_method,
+        func.sum(APIUsageAnalytics.request_count).label('request_count'),
+        func.sum(APIUsageAnalytics.success_count).label('success_count'),
+        func.sum(APIUsageAnalytics.error_count).label('error_count'),
+        func.avg(APIUsageAnalytics.avg_response_time_ms).label('avg_response_time')
+    )
+    
+    if api_id:
+        query = query.filter(APIUsageAnalytics.api_id == api_id)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    query = query.group_by(
+        APIUsageAnalytics.endpoint,
+        APIUsageAnalytics.http_method
+    ).order_by(func.sum(APIUsageAnalytics.request_count).desc()).limit(limit)
+    
+    results = []
+    for row in query.all():
+        request_count = row.request_count or 0
+        error_count = row.error_count or 0
+        
+        results.append({
+            "endpoint": row.endpoint,
+            "http_method": row.http_method,
+            "request_count": request_count,
+            "success_count": row.success_count or 0,
+            "error_count": error_count,
+            "avg_response_time_ms": float(row.avg_response_time) if row.avg_response_time else None,
+            "error_rate": (error_count / request_count * 100) if request_count > 0 else 0.0
+        })
+    
+    return results
+
+
+def get_consumer_analytics(
+    db: Session,
+    api_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    environment: Optional[str] = None,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Get analytics aggregated by consumer.
+    
+    Args:
+        db: Database session
+        api_id: Optional API ID filter
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+        environment: Optional environment filter
+        limit: Maximum number of consumers to return
+        
+    Returns:
+        List of dictionaries with per-consumer analytics
+    """
+    query = db.query(
+        APIUsageAnalytics.consumer_id,
+        APIUsageAnalytics.consumer_name,
+        func.sum(APIUsageAnalytics.request_count).label('request_count'),
+        func.sum(APIUsageAnalytics.error_count).label('error_count')
+    )
+    
+    if api_id:
+        query = query.filter(APIUsageAnalytics.api_id == api_id)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    query = query.filter(APIUsageAnalytics.consumer_id.isnot(None))
+    query = query.group_by(
+        APIUsageAnalytics.consumer_id,
+        APIUsageAnalytics.consumer_name
+    ).order_by(func.sum(APIUsageAnalytics.request_count).desc()).limit(limit)
+    
+    results = []
+    for row in query.all():
+        request_count = row.request_count or 0
+        error_count = row.error_count or 0
+        
+        results.append({
+            "consumer_id": row.consumer_id,
+            "consumer_name": row.consumer_name,
+            "request_count": request_count,
+            "error_count": error_count,
+            "error_rate": (error_count / request_count * 100) if request_count > 0 else 0.0
+        })
+    
+    return results
+
+
+def get_time_series_analytics(
+    db: Session,
+    api_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    environment: Optional[str] = None,
+    granularity: str = "day"
+) -> List[Dict[str, Any]]:
+    """
+    Get time series analytics data.
+    
+    Args:
+        db: Database session
+        api_id: Optional API ID filter
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+        environment: Optional environment filter
+        granularity: Time granularity (hour, day, week, month)
+        
+    Returns:
+        List of dictionaries with time series data points
+    """
+    query = db.query(
+        APIUsageAnalytics.tracked_date,
+        func.sum(APIUsageAnalytics.request_count).label('request_count'),
+        func.sum(APIUsageAnalytics.error_count).label('error_count'),
+        func.avg(APIUsageAnalytics.avg_response_time_ms).label('avg_response_time')
+    )
+    
+    if api_id:
+        query = query.filter(APIUsageAnalytics.api_id == api_id)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    query = query.group_by(APIUsageAnalytics.tracked_date).order_by(APIUsageAnalytics.tracked_date)
+    
+    results = []
+    for row in query.all():
+        results.append({
+            "timestamp": row.tracked_date,
+            "request_count": row.request_count or 0,
+            "error_count": row.error_count or 0,
+            "avg_response_time_ms": float(row.avg_response_time) if row.avg_response_time else None
+        })
+    
+    return results
+
+
+def get_top_apis_by_usage(
+    db: Session,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    environment: Optional[str] = None,
+    limit: int = 10
+) -> List[Dict[str, Any]]:
+    """
+    Get top APIs by usage/request count.
+    
+    Args:
+        db: Database session
+        start_date: Optional start date filter
+        end_date: Optional end date filter
+        environment: Optional environment filter
+        limit: Number of top APIs to return
+        
+    Returns:
+        List of dictionaries with API usage statistics
+    """
+    query = db.query(
+        API.id,
+        API.name,
+        API.service_name,
+        API.version,
+        func.sum(APIUsageAnalytics.request_count).label('total_requests'),
+        func.sum(APIUsageAnalytics.error_count).label('total_errors')
+    ).join(APIUsageAnalytics, API.id == APIUsageAnalytics.api_id)
+    
+    if start_date:
+        query = query.filter(APIUsageAnalytics.tracked_date >= start_date)
+    
+    if end_date:
+        query = query.filter(APIUsageAnalytics.tracked_date <= end_date)
+    
+    if environment:
+        query = query.filter(APIUsageAnalytics.environment == environment)
+    
+    query = query.group_by(
+        API.id, API.name, API.service_name, API.version
+    ).order_by(func.sum(APIUsageAnalytics.request_count).desc()).limit(limit)
+    
+    results = []
+    for row in query.all():
+        total_requests = row.total_requests or 0
+        total_errors = row.total_errors or 0
+        
+        results.append({
+            "api_id": row.id,
+            "api_name": row.name,
+            "service_name": row.service_name,
+            "version": row.version,
+            "total_requests": total_requests,
+            "total_errors": total_errors,
+            "error_rate": (total_errors / total_requests * 100) if total_requests > 0 else 0.0
+        })
+    
+    return results
 

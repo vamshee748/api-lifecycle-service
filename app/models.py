@@ -179,3 +179,88 @@ class GovernancePolicy(Base, BaseModel):
     
     def __repr__(self):
         return f"<GovernancePolicy(id={self.id}, name='{self.name}', rule_type='{self.rule_type}', severity='{self.severity.value}', active={self.is_active})>"
+
+
+# ============================================================
+# Analytics Model - API usage tracking and metrics
+# ============================================================
+
+class APIUsageAnalytics(Base, BaseModel):
+    """
+    API Usage Analytics Model - Tracks API usage metrics and events
+    
+    Captures detailed usage data for APIs including request counts, response times,
+    error rates, and other metrics for analytics, monitoring, and reporting.
+    """
+    __tablename__ = "api_usage_analytics"
+    
+    # Foreign key relationship
+    api_id = Column(Integer, ForeignKey("apis.id", ondelete="CASCADE"), nullable=False, index=True, comment="Reference to the API")
+    
+    # Tracking metadata
+    endpoint = Column(String(500), nullable=True, index=True, comment="Specific endpoint path being tracked")
+    http_method = Column(String(10), nullable=True, index=True, comment="HTTP method (GET, POST, PUT, DELETE, etc.)")
+    
+    # Usage metrics
+    request_count = Column(Integer, default=0, nullable=False, comment="Total number of requests")
+    success_count = Column(Integer, default=0, nullable=False, comment="Number of successful requests (2xx status codes)")
+    error_count = Column(Integer, default=0, nullable=False, comment="Number of failed requests (4xx, 5xx status codes)")
+    
+    # Performance metrics
+    avg_response_time_ms = Column(Integer, default=0, nullable=True, comment="Average response time in milliseconds")
+    min_response_time_ms = Column(Integer, default=0, nullable=True, comment="Minimum response time in milliseconds")
+    max_response_time_ms = Column(Integer, default=0, nullable=True, comment="Maximum response time in milliseconds")
+    
+    # Time-based tracking
+    tracked_date = Column(DateTime(timezone=True), nullable=False, index=True, comment="Date for which metrics are tracked")
+    
+    # Consumer/Client tracking
+    consumer_id = Column(String(255), nullable=True, index=True, comment="ID of the API consumer/client")
+    consumer_name = Column(String(255), nullable=True, comment="Name of the API consumer/client")
+    
+    # Geographic/Environment tracking
+    environment = Column(String(50), nullable=True, index=True, comment="Environment (production, staging, development)")
+    region = Column(String(100), nullable=True, index=True, comment="Geographic region or data center")
+    
+    # Status code breakdown
+    status_2xx_count = Column(Integer, default=0, nullable=False, comment="Count of 2xx status codes")
+    status_4xx_count = Column(Integer, default=0, nullable=False, comment="Count of 4xx status codes")
+    status_5xx_count = Column(Integer, default=0, nullable=False, comment="Count of 5xx status codes")
+    
+    # Bandwidth tracking
+    total_request_size_bytes = Column(Integer, default=0, nullable=True, comment="Total size of requests in bytes")
+    total_response_size_bytes = Column(Integer, default=0, nullable=True, comment="Total size of responses in bytes")
+    
+    # Additional metadata
+    metadata = Column(Text, nullable=True, comment="Additional metadata in JSON format")
+    
+    # Relationships
+    api = relationship("API", backref="analytics")
+    
+    # Indexes for performance and querying
+    __table_args__ = (
+        Index('idx_analytics_api_date', 'api_id', 'tracked_date'),
+        Index('idx_analytics_date_endpoint', 'tracked_date', 'endpoint'),
+        Index('idx_analytics_environment_date', 'environment', 'tracked_date'),
+        Index('idx_analytics_consumer_date', 'consumer_id', 'tracked_date'),
+        Index('idx_analytics_api_method_date', 'api_id', 'http_method', 'tracked_date'),
+        UniqueConstraint('api_id', 'endpoint', 'http_method', 'tracked_date', 'consumer_id', 'environment', name='uq_analytics_tracking'),
+        {'comment': 'API usage analytics and metrics tracking'}
+    )
+    
+    def __repr__(self):
+        return f"<APIUsageAnalytics(id={self.id}, api_id={self.api_id}, endpoint='{self.endpoint}', requests={self.request_count}, date={self.tracked_date})>"
+    
+    @property
+    def error_rate(self) -> float:
+        """Calculate error rate as a percentage"""
+        if self.request_count == 0:
+            return 0.0
+        return (self.error_count / self.request_count) * 100
+    
+    @property
+    def success_rate(self) -> float:
+        """Calculate success rate as a percentage"""
+        if self.request_count == 0:
+            return 0.0
+        return (self.success_count / self.request_count) * 100

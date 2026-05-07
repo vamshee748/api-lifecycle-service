@@ -447,3 +447,201 @@ class ErrorResponse(BaseModel):
             }
         }
     )
+
+
+# ============================================================
+# Analytics Schemas
+# ============================================================
+
+class AnalyticsBase(BaseModel):
+    """Base schema for analytics data"""
+    api_id: int = Field(..., gt=0, description="ID of the API being tracked")
+    endpoint: Optional[str] = Field(None, max_length=500, description="Specific endpoint path", examples=["/users", "/payments"])
+    http_method: Optional[str] = Field(None, max_length=10, description="HTTP method", examples=["GET", "POST", "PUT", "DELETE"])
+    request_count: int = Field(default=0, ge=0, description="Total number of requests")
+    success_count: int = Field(default=0, ge=0, description="Number of successful requests")
+    error_count: int = Field(default=0, ge=0, description="Number of failed requests")
+    avg_response_time_ms: Optional[int] = Field(None, ge=0, description="Average response time in milliseconds")
+    min_response_time_ms: Optional[int] = Field(None, ge=0, description="Minimum response time in milliseconds")
+    max_response_time_ms: Optional[int] = Field(None, ge=0, description="Maximum response time in milliseconds")
+    tracked_date: datetime = Field(..., description="Date for which metrics are tracked")
+    consumer_id: Optional[str] = Field(None, max_length=255, description="ID of the API consumer")
+    consumer_name: Optional[str] = Field(None, max_length=255, description="Name of the API consumer")
+    environment: Optional[str] = Field(None, max_length=50, description="Environment", examples=["production", "staging", "development"])
+    region: Optional[str] = Field(None, max_length=100, description="Geographic region", examples=["us-east-1", "eu-west-1"])
+    status_2xx_count: int = Field(default=0, ge=0, description="Count of 2xx status codes")
+    status_4xx_count: int = Field(default=0, ge=0, description="Count of 4xx status codes")
+    status_5xx_count: int = Field(default=0, ge=0, description="Count of 5xx status codes")
+    total_request_size_bytes: Optional[int] = Field(None, ge=0, description="Total request size in bytes")
+    total_response_size_bytes: Optional[int] = Field(None, ge=0, description="Total response size in bytes")
+    metadata: Optional[str] = Field(None, description="Additional metadata in JSON format")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AnalyticsCreate(AnalyticsBase):
+    """Schema for creating analytics data"""
+    pass
+
+
+class AnalyticsUpdate(BaseModel):
+    """Schema for updating analytics data"""
+    request_count: Optional[int] = Field(None, ge=0, description="Total number of requests")
+    success_count: Optional[int] = Field(None, ge=0, description="Number of successful requests")
+    error_count: Optional[int] = Field(None, ge=0, description="Number of failed requests")
+    avg_response_time_ms: Optional[int] = Field(None, ge=0, description="Average response time in milliseconds")
+    min_response_time_ms: Optional[int] = Field(None, ge=0, description="Minimum response time in milliseconds")
+    max_response_time_ms: Optional[int] = Field(None, ge=0, description="Maximum response time in milliseconds")
+    status_2xx_count: Optional[int] = Field(None, ge=0, description="Count of 2xx status codes")
+    status_4xx_count: Optional[int] = Field(None, ge=0, description="Count of 4xx status codes")
+    status_5xx_count: Optional[int] = Field(None, ge=0, description="Count of 5xx status codes")
+    total_request_size_bytes: Optional[int] = Field(None, ge=0, description="Total request size in bytes")
+    total_response_size_bytes: Optional[int] = Field(None, ge=0, description="Total response size in bytes")
+    metadata: Optional[str] = Field(None, description="Additional metadata in JSON format")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AnalyticsResponse(AnalyticsBase, TimestampMixin):
+    """Schema for analytics data response"""
+    id: int = Field(..., description="Unique identifier for the analytics record")
+    error_rate: float = Field(..., description="Error rate as a percentage")
+    success_rate: float = Field(..., description="Success rate as a percentage")
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "id": 1,
+                "api_id": 1,
+                "endpoint": "/payments",
+                "http_method": "POST",
+                "request_count": 1000,
+                "success_count": 980,
+                "error_count": 20,
+                "avg_response_time_ms": 125,
+                "min_response_time_ms": 50,
+                "max_response_time_ms": 500,
+                "tracked_date": "2026-05-07T00:00:00Z",
+                "consumer_id": "client-123",
+                "consumer_name": "Mobile App",
+                "environment": "production",
+                "region": "us-east-1",
+                "status_2xx_count": 980,
+                "status_4xx_count": 15,
+                "status_5xx_count": 5,
+                "error_rate": 2.0,
+                "success_rate": 98.0,
+                "created_at": "2026-05-07T10:00:00Z",
+                "updated_at": None
+            }
+        }
+    )
+
+
+class AnalyticsSummary(BaseModel):
+    """Schema for aggregated analytics summary"""
+    api_id: Optional[int] = Field(None, description="API ID (if filtered)")
+    total_requests: int = Field(..., description="Total number of requests")
+    total_success: int = Field(..., description="Total successful requests")
+    total_errors: int = Field(..., description="Total failed requests")
+    avg_response_time_ms: Optional[float] = Field(None, description="Average response time across all requests")
+    overall_error_rate: float = Field(..., description="Overall error rate as a percentage")
+    overall_success_rate: float = Field(..., description="Overall success rate as a percentage")
+    unique_consumers: int = Field(..., description="Number of unique consumers")
+    unique_endpoints: int = Field(..., description="Number of unique endpoints")
+    date_range_start: Optional[datetime] = Field(None, description="Start date of the analysis period")
+    date_range_end: Optional[datetime] = Field(None, description="End date of the analysis period")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "api_id": 1,
+                "total_requests": 50000,
+                "total_success": 49000,
+                "total_errors": 1000,
+                "avg_response_time_ms": 150.5,
+                "overall_error_rate": 2.0,
+                "overall_success_rate": 98.0,
+                "unique_consumers": 25,
+                "unique_endpoints": 10,
+                "date_range_start": "2026-05-01T00:00:00Z",
+                "date_range_end": "2026-05-07T23:59:59Z"
+            }
+        }
+    )
+
+
+class EndpointAnalytics(BaseModel):
+    """Schema for per-endpoint analytics"""
+    endpoint: str = Field(..., description="Endpoint path")
+    http_method: Optional[str] = Field(None, description="HTTP method")
+    request_count: int = Field(..., description="Total requests to this endpoint")
+    success_count: int = Field(..., description="Successful requests")
+    error_count: int = Field(..., description="Failed requests")
+    avg_response_time_ms: Optional[float] = Field(None, description="Average response time")
+    error_rate: float = Field(..., description="Error rate percentage")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "endpoint": "/payments",
+                "http_method": "POST",
+                "request_count": 5000,
+                "success_count": 4900,
+                "error_count": 100,
+                "avg_response_time_ms": 145.2,
+                "error_rate": 2.0
+            }
+        }
+    )
+
+
+class TimeSeriesDataPoint(BaseModel):
+    """Schema for time series data point"""
+    timestamp: datetime = Field(..., description="Timestamp of the data point")
+    request_count: int = Field(..., description="Number of requests at this time")
+    error_count: int = Field(..., description="Number of errors at this time")
+    avg_response_time_ms: Optional[float] = Field(None, description="Average response time")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AnalyticsTimeSeriesResponse(BaseModel):
+    """Schema for time series analytics data"""
+    api_id: Optional[int] = Field(None, description="API ID (if filtered)")
+    data_points: List[TimeSeriesDataPoint] = Field(..., description="Time series data points")
+    total_data_points: int = Field(..., description="Number of data points")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConsumerAnalytics(BaseModel):
+    """Schema for per-consumer analytics"""
+    consumer_id: str = Field(..., description="Consumer/client ID")
+    consumer_name: Optional[str] = Field(None, description="Consumer/client name")
+    request_count: int = Field(..., description="Total requests from this consumer")
+    error_count: int = Field(..., description="Failed requests from this consumer")
+    error_rate: float = Field(..., description="Error rate percentage")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "consumer_id": "client-123",
+                "consumer_name": "Mobile App",
+                "request_count": 10000,
+                "error_count": 150,
+                "error_rate": 1.5
+            }
+        }
+    )
+
+
+class AnalyticsListResponse(BaseModel):
+    """Schema for paginated analytics list response"""
+    total: int = Field(..., description="Total number of analytics records")
+    page: int = Field(..., ge=1, description="Current page number")
+    page_size: int = Field(..., ge=1, le=1000, description="Number of items per page")
+    data: List[AnalyticsResponse] = Field(..., description="List of analytics records")
+
+    model_config = ConfigDict(from_attributes=True)
