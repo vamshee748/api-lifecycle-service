@@ -14,6 +14,7 @@ from app.schemas import (
 )
 from sqlalchemy import func, and_, or_
 from datetime import datetime, timedelta
+from app.utils import cached, invalidate_cache_pattern
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -1337,6 +1338,9 @@ def create_analytics_record(db: Session, analytics_data: AnalyticsCreate) -> API
         db.commit()
         db.refresh(db_analytics)
         
+        # Invalidate analytics cache after creating new record
+        invalidate_cache_pattern("analytics:*")
+        
         logger.info(
             f"Created analytics record: API {analytics_data.api_id}, "
             f"Endpoint: {analytics_data.endpoint}, Requests: {analytics_data.request_count}"
@@ -1426,6 +1430,7 @@ def get_analytics_records(
     return query.offset(skip).limit(limit).all()
 
 
+@cached(prefix="analytics:summary", ttl=300)
 def get_analytics_summary(
     db: Session,
     api_id: Optional[int] = None,
@@ -1435,6 +1440,8 @@ def get_analytics_summary(
 ) -> Dict[str, Any]:
     """
     Get aggregated analytics summary.
+    
+    Cached for 5 minutes (300 seconds).
     
     Args:
         db: Database session
@@ -1490,6 +1497,7 @@ def get_analytics_summary(
     }
 
 
+@cached(prefix="analytics:endpoints", ttl=300)
 def get_endpoint_analytics(
     db: Session,
     api_id: Optional[int] = None,
@@ -1500,6 +1508,8 @@ def get_endpoint_analytics(
 ) -> List[Dict[str, Any]]:
     """
     Get analytics aggregated by endpoint.
+    
+    Cached for 5 minutes (300 seconds).
     
     Args:
         db: Database session
@@ -1556,6 +1566,7 @@ def get_endpoint_analytics(
     return results
 
 
+@cached(prefix="analytics:consumers", ttl=300)
 def get_consumer_analytics(
     db: Session,
     api_id: Optional[int] = None,
@@ -1566,6 +1577,8 @@ def get_consumer_analytics(
 ) -> List[Dict[str, Any]]:
     """
     Get analytics aggregated by consumer.
+    
+    Cached for 5 minutes (300 seconds).
     
     Args:
         db: Database session
@@ -1619,6 +1632,7 @@ def get_consumer_analytics(
     return results
 
 
+@cached(prefix="analytics:timeseries", ttl=600)
 def get_time_series_analytics(
     db: Session,
     api_id: Optional[int] = None,
@@ -1629,6 +1643,8 @@ def get_time_series_analytics(
 ) -> List[Dict[str, Any]]:
     """
     Get time series analytics data.
+    
+    Cached for 10 minutes (600 seconds).
     
     Args:
         db: Database session
@@ -1674,6 +1690,7 @@ def get_time_series_analytics(
     return results
 
 
+@cached(prefix="analytics:top_apis", ttl=600)
 def get_top_apis_by_usage(
     db: Session,
     start_date: Optional[datetime] = None,
@@ -1683,6 +1700,8 @@ def get_top_apis_by_usage(
 ) -> List[Dict[str, Any]]:
     """
     Get top APIs by usage/request count.
+    
+    Cached for 10 minutes (600 seconds).
     
     Args:
         db: Database session

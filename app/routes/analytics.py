@@ -27,6 +27,7 @@ from app.services import (
     get_top_apis_by_usage
 )
 from app.models import APIUsageAnalytics
+from app.utils import get_current_user, get_current_user_optional, require_permission
 
 # Create router for analytics endpoints
 router = APIRouter(
@@ -44,20 +45,26 @@ router = APIRouter(
     response_model=AnalyticsResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create analytics record",
-    description="Create a new analytics record for API usage tracking",
+    description="Create a new analytics record for API usage tracking (Authentication Required)",
     responses={
         201: {"description": "Analytics record successfully created"},
         400: {"description": "Invalid request data"},
+        401: {"description": "Authentication required"},
+        403: {"description": "Permission denied"},
         404: {"description": "Referenced API not found"},
         422: {"description": "Validation error"}
     }
 )
 def create_analytics_endpoint(
     analytics_data: AnalyticsCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_permission("analytics:write"))
 ):
     """
     Create a new analytics record for tracking API usage metrics.
+    
+    **Authentication Required:** Yes (Bearer token)
+    **Permission Required:** analytics:write
     
     **Request Body:**
     - **api_id**: ID of the API being tracked (required)
@@ -102,10 +109,13 @@ def list_analytics_endpoint(
     environment: Optional[str] = Query(None, description="Filter by environment"),
     start_date: Optional[datetime] = Query(None, description="Filter by start date"),
     end_date: Optional[datetime] = Query(None, description="Filter by end date"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """
     Retrieve a list of analytics records with comprehensive filtering.
+    
+    **Authentication:** Optional (provides enhanced access if authenticated)
     
     **Query Parameters:**
     - **skip**: Number of records to skip (pagination, default: 0)
