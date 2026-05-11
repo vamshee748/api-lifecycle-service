@@ -24,7 +24,7 @@ from app.models import PolicySeverity, GovernancePolicy, APIChange
 # Create router for governance policy endpoints
 router = APIRouter(
     prefix="/policies",
-    tags=["Governance Policies"],
+    tags=["Policies"],
     responses={
         404: {"description": "Policy not found"},
         500: {"description": "Internal server error"}

@@ -19,7 +19,7 @@ from app.models import ChangeType, APIChange
 # Create router for API changes endpoints
 router = APIRouter(
     prefix="/changes",
-    tags=["API Changes"],
+    tags=["Changes"],
     responses={
         404: {"description": "Change or API not found"},
         500: {"description": "Internal server error"}
