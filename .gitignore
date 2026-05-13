@@ -63,3 +63,14 @@ dmypy.json
 # Distribution / packaging
 *.manifest
 *.spec
+
+# Docker
+Docker/.env
+Docker/logs/
+Docker/ssl/
+docker-compose.override.yml
+
+# CI/CD artifacts
+coverage.xml
+bandit-report.json
+trivy-results.sarif

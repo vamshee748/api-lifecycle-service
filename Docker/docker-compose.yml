@@ -1,1 +1,205 @@
-# Docker Compose configuration
+# ============================================================================
+# Docker Compose Configuration for API Lifecycle Service
+# Production-Ready Setup with PostgreSQL, Redis, and Application
+# ============================================================================
+version: '3.8'
+
+services:
+  # ============================================================================
+  # PostgreSQL Database Service
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: api-lifecycle-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-apiuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securepassword123}
+      POSTGRES_DB: ${POSTGRES_DB:-api_lifecycle_db}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    networks:
+      - api-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-apiuser} -d ${POSTGRES_DB:-api_lifecycle_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # ============================================================================
+  # Redis Cache Service
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: api-lifecycle-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-redispass123}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - api-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+  # ============================================================================
+  # API Lifecycle Service Application
+  # ============================================================================
+  app:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    image: api-lifecycle-service:latest
+    container_name: api-lifecycle-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database Configuration
+      DATABASE_URL: postgresql://${POSTGRES_USER:-apiuser}:${POSTGRES_PASSWORD:-securepassword123}@postgres:5432/${POSTGRES_DB:-api_lifecycle_db}
+      
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redispass123}
+      REDIS_DB: 0
+      
+      # JWT Configuration
+      SECRET_KEY: ${SECRET_KEY:-your-super-secret-key-change-in-production-min-32-characters}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      
+      # Application Configuration
+      APP_ENV: ${APP_ENV:-production}
+      DEBUG: ${DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      
+      # CORS Configuration
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8000"]}
+      
+      # Cache Configuration
+      CACHE_DEFAULT_TTL: 300
+      CACHE_ANALYTICS_TTL: 600
+      
+      # Performance
+      WORKERS: ${WORKERS:-4}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      - ./logs:/app/logs
+      - ../app:/app/app:ro  # Mount code as read-only in development
+    networks:
+      - api-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+    labels:
+      - "com.api-lifecycle.service=backend"
+      - "com.api-lifecycle.environment=${APP_ENV:-production}"
+
+  # ============================================================================
+  # Nginx Reverse Proxy (Optional - for production)
+  # ============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: api-lifecycle-nginx
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro  # SSL certificates
+      - nginx_logs:/var/log/nginx
+    networks:
+      - api-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.25'
+          memory: 64M
+    profiles:
+      - production  # Only start with --profile production
+
+# ============================================================================
+# Network Configuration
+# ============================================================================
+networks:
+  api-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================================================
+# Volume Configuration
+# ============================================================================
+volumes:
+  postgres_data:
+    driver: local
+    name: api_lifecycle_postgres_data
+  redis_data:
+    driver: local
+    name: api_lifecycle_redis_data
+  nginx_logs:
+    driver: local
+    name: api_lifecycle_nginx_logs

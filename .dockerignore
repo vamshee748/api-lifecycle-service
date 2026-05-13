@@ -1,0 +1,84 @@
+# ============================================================================
+# Docker Ignore File
+# Excludes unnecessary files from Docker build context
+# ============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+*.cover
+.hypothesis
+
+# Documentation
+*.md
+docs/
+*.rst
+
+# Logs
+*.log
+logs/
+app.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+Docker/logs
+Docker/ssl
+docker-compose*.yml
+!Docker/docker-compose.yml
+Dockerfile
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Misc
+*.bak
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
